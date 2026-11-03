@@ -15,7 +15,7 @@
 >
 > The ingestion schema and ETL logic are identical across all these files — only the source path changes. Merge them at the Bronze layer under a shared `source_dataset` metadata column.
 
-**Core principle:** Use AWS where it provides meaningful value, but keep expensive/always-on compute local. The recommended architecture is hybrid: **S3 + AWS NLP + Athena/Glue Catalog on AWS; Airflow + Spark locally in Docker.**
+**Core principle:** Use AWS where it provides meaningful value, but keep expensive/always-on compute local. The recommended architecture is hybrid: **S3 + AWS NLP + Athena/Glue Catalog on AWS; Airflow + Python ETL locally in Docker.**
 
 ---
 
@@ -41,8 +41,8 @@ Local Ingestion (Python/CLI)
       +---------+----------+
       |         |          |
       v         v          v
-    Spark     Quality      NLP
-    Local    Validation   Pipeline
+   Python    Quality      NLP
+    ETL     Validation   Pipeline
                            |
                     (see Section 6
                     for detailed flow)
@@ -71,7 +71,7 @@ Local Ingestion (Python/CLI)
 | Source | Kaggle Amazon Reviews |
 | Data Lake | Amazon S3 |
 | Data Format | Parquet |
-| ETL | Apache Spark |
+| ETL | Python (pandas + pyarrow) |
 | Orchestration | Apache Airflow |
 | Airflow Runtime | Docker Compose |
 | Language Detection | `langdetect` (local Python library) |
@@ -101,7 +101,7 @@ Local Ingestion (Python/CLI)
 | Athena | AWS | Serverless SQL over S3 |
 | Glue Catalog | AWS | Metadata/schema for Athena |
 | IAM / CloudWatch / Budget | AWS | Security and operations |
-| Spark ETL | Local | Avoid unnecessary cloud compute cost |
+| Python ETL | Local | Lightweight, no JVM overhead, avoids cloud compute cost |
 | Airflow | Local Docker | Avoid MWAA cost |
 | PostgreSQL for Airflow metadata | Local Docker | No need for RDS |
 | Redis (Celery if used) | Local Docker | Avoid managed infrastructure |
@@ -114,46 +114,56 @@ Local Ingestion (Python/CLI)
 
 ---
 
-## 4.1 Spark–S3 Connectivity Requirements
+## 4.1 Python–S3 Connectivity Requirements
 
-Running Spark locally (in Docker) while reading and writing to Amazon S3 requires explicit configuration. This is one of the most common failure points in hybrid local/cloud setups and must be verified independently in **Phase 1** before any ETL job is written.
+Python ETL scripts communicate with Amazon S3 via `boto3`. This is simpler than JVM-based connectors (no JAR management, no version-mismatch issues) but still requires correct credential configuration, especially when running inside Docker.
 
-### Required JARs
-
-Spark communicates with S3 via the `s3a://` filesystem connector. The following JARs must be present in the Spark classpath, with **matching versions**:
+### Required Libraries
 
 ```text
-hadoop-aws-<version>.jar
-aws-java-sdk-bundle-<version>.jar
+boto3           ← AWS SDK for Python (S3, Translate, Comprehend)
+pandas          ← tabular data processing
+pyarrow         ← Parquet read/write
+s3fs            ← (optional) pandas-compatible S3 filesystem interface
 ```
 
-Version mismatches between these two JARs are the primary cause of `ClassNotFoundException` and `NoSuchMethodError` at runtime. The JAR versions must match the Hadoop version bundled in the Spark distribution being used.
+Install via `requirements.txt` or `pyproject.toml`.
 
-Example for Spark 3.4.x (Hadoop 3.3.x):
-
-```text
-hadoop-aws-3.3.4.jar
-aws-java-sdk-bundle-1.12.262.jar
-```
-
-Place both JARs under `$SPARK_HOME/jars/` or pass them via `--jars` at spark-submit time.
-
-### SparkSession Configuration
+### Basic S3 Read/Write with boto3 + pyarrow
 
 ```python
-spark = SparkSession.builder \
-    .appName("voc-pipeline") \
-    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-    .config("spark.hadoop.fs.s3a.aws.credentials.provider",
-            "com.amazonaws.auth.EnvironmentVariableCredentialsProvider") \
-    .config("spark.hadoop.fs.s3a.endpoint", "s3.amazonaws.com") \
-    .config("spark.hadoop.fs.s3a.path.style.access", "false") \
-    .getOrCreate()
+import boto3
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from io import BytesIO
+
+s3 = boto3.client("s3")
+bucket = "voc-analytics-dev"
+
+# Read Parquet from S3
+obj = s3.get_object(Bucket=bucket, Key="silver/reviews/year=2024/month=01/part-0.parquet")
+df = pd.read_parquet(BytesIO(obj["Body"].read()))
+
+# Write Parquet to S3
+buffer = BytesIO()
+df.to_parquet(buffer, index=False, engine="pyarrow")
+s3.put_object(Bucket=bucket, Key="silver/reviews/year=2024/month=01/output.parquet", Body=buffer.getvalue())
+```
+
+Alternatively, use `s3fs` for a simpler pandas-native interface:
+
+```python
+import s3fs
+
+fs = s3fs.S3FileSystem()
+df = pd.read_parquet("s3://voc-analytics-dev/silver/reviews/year=2024/month=01/part-0.parquet", filesystem=fs)
+df.to_parquet("s3://voc-analytics-dev/silver/reviews/year=2024/month=01/output.parquet", filesystem=fs, index=False)
 ```
 
 ### Credentials in Docker
 
-Spark and Airflow both run inside Docker containers. AWS credentials must be injected at runtime — do **not** bake them into the image.
+Airflow and Python ETL scripts run inside Docker containers. AWS credentials must be injected at runtime — do **not** bake them into the image.
 
 Two options:
 
@@ -180,14 +190,18 @@ Use a named profile and set `AWS_PROFILE` in the container environment.
 
 ### Phase 1 Smoke Test
 
-Before writing any pipeline code, validate the Spark–S3 connection with a minimal script:
+Before writing any pipeline code, validate Python–S3 connectivity with a minimal script:
 
 ```python
-df = spark.read.text("s3a://voc-analytics-dev/raw/test.txt")
-df.write.mode("overwrite").parquet("s3a://voc-analytics-dev/test_output/")
+import boto3
+
+s3 = boto3.client("s3")
+s3.put_object(Bucket="voc-analytics-dev", Key="raw/test.txt", Body=b"hello from python")
+obj = s3.get_object(Bucket="voc-analytics-dev", Key="raw/test.txt")
+print(obj["Body"].read().decode())  # should print: hello from python
 ```
 
-If this fails, resolve the JAR and credential issues before proceeding to Phase 4.
+If this fails, resolve credential and network issues before proceeding to Phase 4.
 
 ---
 
@@ -547,8 +561,8 @@ VOC Pipeline
 |    +-- register_metadata
 |
 +-- transformation
-|    +-- spark_bronze
-|    +-- spark_silver
+|    +-- etl_bronze
+|    +-- etl_silver
 |    +-- data_quality
 |
 +-- nlp
@@ -753,6 +767,9 @@ voc-pipeline/
 +-- src/
 |   +-- ingestion/
 |   +-- transformation/
+|   |   +-- bronze/
+|   |   +-- silver/
+|   |   +-- gold/
 |   +-- nlp/
 |   |   +-- detection/
 |   |   +-- translation/
@@ -760,11 +777,6 @@ voc-pipeline/
 |   |   +-- tracking/        ← idempotency tracking logic
 |   +-- quality/
 |   +-- common/
-|
-+-- spark/
-|   +-- bronze/
-|   +-- silver/
-|   +-- gold/
 |
 +-- sql/
 |   +-- athena/
@@ -976,7 +988,7 @@ Use Airflow logs locally and CloudWatch for AWS-side operational visibility.
 - Use Parquet + compression + year/month partitioning for Athena scan reduction.
 - Add AWS Budget alerts.
 - Destroy unused infrastructure.
-- Keep Spark and Airflow local.
+- Keep Python ETL and Airflow local.
 
 ---
 
@@ -1068,11 +1080,11 @@ DuckDB can read S3 Parquet files directly via the `httpfs` extension, allowing l
 ### Phase 1 — Environment
 
 - Create GitHub repository.
-- Configure Python, Docker, Spark, Airflow, AWS CLI and Terraform.
+- Configure Python, Docker, Airflow, AWS CLI and Terraform.
 - Start Airflow with Docker Compose.
-- **Validate Spark–S3 connectivity** with a minimal read/write smoke test (see Section 4.1). Do not proceed to Phase 4 until this passes.
+- **Validate Python–S3 connectivity** with a minimal boto3 read/write smoke test (see Section 4.1). Do not proceed to Phase 4 until this passes.
 
-**Deliverable:** reproducible local development environment with confirmed S3 access from Spark.
+**Deliverable:** reproducible local development environment with confirmed S3 access from Python (boto3).
 
 ### Phase 2 — AWS Foundation
 
@@ -1094,7 +1106,7 @@ Kaggle -> download -> checksum -> S3 raw -> metadata
 
 **Deliverable:** raw source stored in S3 with lineage metadata and confirmed language distribution.
 
-### Phase 4 — Spark ETL
+### Phase 4 — Python ETL
 
 ```text
 Raw -> Bronze -> Silver
@@ -1135,7 +1147,7 @@ Implement GitHub Actions, OIDC, Terraform deployment, monitoring, and documentat
 ### Phase 9 — Scale/Benchmark
 
 - Compare cloud NLP with local NLP.
-- Benchmark Spark performance.
+- Benchmark Python ETL performance.
 - Measure cost per 1K / 10K / 100K reviews.
 - Test full-dataset ETL.
 - Document scaling from 100K to 100M reviews.
@@ -1153,7 +1165,7 @@ Build this first:
 S3 Raw
    |
    v
-Spark Silver
+Python Silver (pandas + pyarrow)
    |
    v
 Language Detection (local)
@@ -1185,20 +1197,20 @@ The architecture should allow you to explain:
 1. Why S3 instead of a database for raw/analytical storage?
 2. Why Parquet instead of TSV/CSV for downstream analytics?
 3. Why Airflow locally instead of MWAA?
-4. Why Spark locally instead of EMR/Glue ETL?
+4. Why Python ETL locally instead of EMR/Glue ETL?
 5. How is NLP API cost controlled?
 6. How is the pipeline idempotent? Where is processing state stored?
 7. What happens when AWS Translate or Comprehend fails?
 8. How are failed records recovered?
 9. How would you scale from 100K to 100M reviews?
-10. How would you migrate local Spark jobs to AWS Glue?
+10. How would you migrate local Python ETL jobs to AWS Glue or Spark on EMR?
 11. How do partitioning and compression reduce Athena scan costs?
 12. How do GitHub Actions and OIDC securely deploy to AWS?
 13. How do you separate customer rating from model-predicted sentiment?
 14. How do you detect data-quality regressions?
 15. Why are some non-English reviews not translated before sentiment analysis?
 16. How does the Gold layer handle reviews that have not yet been through the NLP pipeline?
-17. How did you configure Spark to read and write S3 from a local Docker environment?
+17. How did you configure Python (boto3) to read and write S3 from a local Docker environment?
 
 ---
 
@@ -1210,7 +1222,7 @@ The architecture should allow you to explain:
 
 ### Example CV bullets
 
-- Built a production-style multilingual Voice of Customer data platform using Apache Spark, Airflow, Amazon S3, Athena, AWS Translate and Amazon Comprehend to automate review ingestion, language-aware translation routing, and batch sentiment enrichment.
+- Built a production-style multilingual Voice of Customer data platform using Python (pandas/pyarrow), Airflow, Amazon S3, Athena, AWS Translate and Amazon Comprehend to automate review ingestion, language-aware translation routing, and batch sentiment enrichment.
 - Implemented a medallion-style data lake (raw → bronze → silver → silver_nlp → gold) with consistent year/month partitioned Parquet on Amazon S3 for scalable analytical workloads and cost-efficient Athena queries.
 - Implemented idempotent, cost-aware NLP processing with SHA256-keyed tracking on S3, configurable character limits, Comprehend-native language routing, batch API calls, and provider abstraction to control AWS Translate and Comprehend usage.
 - Automated infrastructure provisioning and CI/CD using Terraform, GitHub Actions, and GitHub OIDC with automated testing, DAG validation, and deployment workflows.
@@ -1236,7 +1248,7 @@ AWS
 LOCAL / DOCKER
 |
 +-- Airflow             <- orchestration
-+-- Spark               <- ETL (s3a:// connector to S3)
++-- Python ETL          <- pandas + pyarrow + boto3 (ETL processing)
 +-- PostgreSQL          <- Airflow metadata DB
 +-- Redis (optional)    <- Celery executor
 +-- DuckDB              <- local dev / validation / idempotency tracking

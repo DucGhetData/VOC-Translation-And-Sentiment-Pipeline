@@ -1,0 +1,77 @@
+environment: dev
+
+source:
+  name: amazon_reviews
+  files:
+    - amazon_reviews_multilingual_US_v1_00.tsv
+    # Uncomment to add supplemental datasets:
+    # - amazon_reviews_multilingual_DE_v1_00.tsv
+    # - amazon_reviews_multilingual_FR_v1_00.tsv
+    # - amazon_reviews_multilingual_JP_v1_00.tsv
+
+storage:
+  bucket: voc-analytics-dev
+  region: ap-southeast-1   # Singapore — closest to Vietnam
+  paths:
+    raw: raw/amazon_reviews
+    bronze: bronze/reviews
+    silver: silver/reviews
+    silver_nlp: silver_nlp/reviews
+    gold: gold
+    manifests: manifests/nlp_tracking
+    quality: quality
+    logs: logs
+
+processing:
+  partition_by:
+    - year
+    - month
+  chunk_size: 50000         # rows per processing chunk
+  parquet_compression: snappy
+
+nlp:
+  language_detection:
+    provider: langdetect    # or: fasttext
+    min_text_length: 10     # skip detection for very short texts
+
+  translation:
+    enabled: true
+    provider: aws_translate
+    max_characters: 2_000_000
+    skip_comprehend_native: true  # skip translate for Comprehend-supported languages
+
+  sentiment:
+    enabled: true
+    provider: aws_comprehend
+    max_characters: 5_000_000
+    batch_size: 25          # BatchDetectSentiment limit
+
+  max_reviews_per_run: 10_000
+
+  # Languages supported natively by AWS Comprehend (no translation needed)
+  comprehend_native_languages:
+    - ar
+    - zh
+    - zh-TW
+    - en
+    - fr
+    - de
+    - hi
+    - it
+    - ja
+    - ko
+    - pt
+    - es
+
+quality:
+  thresholds:
+    nlp_coverage_rate: 0.95
+    null_review_id_max_rate: 0.0
+    invalid_star_rating_max_rate: 0.0
+    duplicate_review_id_max_rate: 0.0
+
+airflow:
+  dag_schedule: "@daily"
+  default_retries: 3
+  retry_delay_minutes: 5
+  execution_timeout_minutes: 120
