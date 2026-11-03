@@ -175,5 +175,18 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
 
-# Raw data
+# Raw data and dev`s note 
 raw_data/
+docs/
+# Airflow runtime logs
+logs/
+
+# Terraform local working data and sensitive state
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.auto.tfvars
+crash.log
+crash.*.log

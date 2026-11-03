@@ -72,9 +72,12 @@ def test_s3_text_roundtrip(s3) -> bool:
     key = f"{TEST_PREFIX}/test_{TIMESTAMP}.txt"
     content = b"hello from voc-pipeline smoke test"
 
+    uploaded = False
+    passed = False
     try:
         # Write
         s3.put_object(Bucket=BUCKET, Key=key, Body=content)
+        uploaded = True
         print(f"  ✅ Uploaded : s3://{BUCKET}/{key}")
 
         # Read back
@@ -83,13 +86,20 @@ def test_s3_text_roundtrip(s3) -> bool:
         assert result == content, f"Content mismatch: {result!r} != {content!r}"
         print(f"  ✅ Read back: '{result.decode()}'")
 
-        # Cleanup
-        s3.delete_object(Bucket=BUCKET, Key=key)
-        print(f"  ✅ Cleaned up test object")
-        return True
+        passed = True
     except ClientError as e:
         print(f"  ❌ S3 error: {e}")
-        return False
+    except Exception as e:
+        print(f"  ❌ Roundtrip error: {e}")
+    finally:
+        if uploaded:
+            try:
+                s3.delete_object(Bucket=BUCKET, Key=key)
+                print("  ✅ Cleaned up test object")
+            except ClientError as e:
+                print(f"  ❌ Could not clean up test object: {e}")
+                passed = False
+    return passed
 
 
 def test_s3_parquet_roundtrip(s3) -> bool:
@@ -106,12 +116,15 @@ def test_s3_parquet_roundtrip(s3) -> bool:
         "_test_timestamp": [TIMESTAMP] * 3,
     })
 
+    uploaded = False
+    passed = False
     try:
         # Write Parquet to buffer → upload to S3
         buffer = BytesIO()
         df_original.to_parquet(buffer, index=False, engine="pyarrow")
         buffer.seek(0)
         s3.put_object(Bucket=BUCKET, Key=key, Body=buffer.getvalue())
+        uploaded = True
         print(f"  ✅ Uploaded Parquet : s3://{BUCKET}/{key}")
         print(f"  ✅ Shape            : {df_original.shape} (rows, cols)")
 
@@ -122,16 +135,20 @@ def test_s3_parquet_roundtrip(s3) -> bool:
         assert list(df_read.columns) == list(df_original.columns), "Columns mismatch"
         print(f"  ✅ Read back shape  : {df_read.shape} — matches ✓")
 
-        # Cleanup
-        s3.delete_object(Bucket=BUCKET, Key=key)
-        print(f"  ✅ Cleaned up test object")
-        return True
+        passed = True
     except ClientError as e:
         print(f"  ❌ S3 error: {e}")
-        return False
     except Exception as e:
         print(f"  ❌ Parquet error: {e}")
-        return False
+    finally:
+        if uploaded:
+            try:
+                s3.delete_object(Bucket=BUCKET, Key=key)
+                print("  ✅ Cleaned up test object")
+            except ClientError as e:
+                print(f"  ❌ Could not clean up test object: {e}")
+                passed = False
+    return passed
 
 
 def test_s3_list_bucket(s3) -> bool:
@@ -143,9 +160,9 @@ def test_s3_list_bucket(s3) -> bool:
         return True
     except ClientError as e:
         error_code = e.response["Error"]["Code"]
-        if error_code == "404":
+        if error_code in {"404", "NoSuchBucket"}:
             print(f"  ⚠️  Bucket '{BUCKET}' does not exist yet — create it in Phase 2 (Terraform)")
-            print(f"       This is OK for Phase 1 connectivity check. Skipping Parquet tests.")
+            print("       S3 connectivity is not fully validated until the bucket exists.")
         elif error_code == "403":
             print(f"  ❌ Access denied to bucket '{BUCKET}' — check IAM permissions")
         else:
@@ -197,12 +214,8 @@ def main() -> int:
     if all_passed:
         print("\n🎉 All smoke tests passed! Ready to proceed to Phase 2.\n")
         return 0
-    elif results["credentials"] and not bucket_ok:
-        print("\n⚠️  AWS credentials OK. Bucket not found — create it in Phase 2 (Terraform).")
-        print("   Phase 1 connectivity is confirmed. Proceed.\n")
-        return 0
     else:
-        print("\n❌ Some tests failed. Resolve issues before proceeding to Phase 4.\n")
+        print("\n❌ Python–S3 connectivity is not fully validated. Resolve the failed check(s).\n")
         return 1
 
 

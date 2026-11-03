@@ -1,0 +1,19 @@
+name: voc-terraform
+
+services:
+  terraform:
+    image: hashicorp/terraform:1.17.1
+    working_dir: /workspace/terraform/environments/dev
+    volumes:
+      - .:/workspace
+      - terraform_plugin_cache:/terraform-plugin-cache
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-ap-southeast-1}
+      TF_PLUGIN_CACHE_DIR: /terraform-plugin-cache
+      TF_IN_AUTOMATION: "true"
+
+volumes:
+  terraform_plugin_cache:

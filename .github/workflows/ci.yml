@@ -1,9 +1,5 @@
-"""
-VOC Pipeline — CI/CD GitHub Actions Workflow
-=============================================
-Pull Request CI: lint, type-check, test
-Merge to main CD: terraform plan → apply
-"""
+# VOC Pipeline — CI workflow
+# Pull requests and pushes: lint, type-check, test, Docker and Terraform validation.
 name: CI
 
 on:
@@ -60,7 +56,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements-dev.txt
+          pip check
 
       - name: Run pytest
         run: pytest tests/unit/ -v --cov=src --cov-report=xml
@@ -103,8 +101,8 @@ jobs:
 
       - name: Install Airflow
         run: |
-          pip install "apache-airflow==2.10.3" \
-            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.3/constraints-3.12.txt"
+          pip install "apache-airflow==2.11.2" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.11.2/constraints-3.12.txt"
 
       - name: Test DAG imports
         run: |
@@ -134,7 +132,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.9"
+          terraform_version: "1.17.1"
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive

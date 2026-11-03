@@ -1,0 +1,29 @@
+# VOC Translation & Sentiment Pipeline - Development Requirements
+# Includes all runtime dependencies.
+-r requirements.txt
+
+# --- Alternative Parquet engine ---
+fastparquet==2024.11.0
+
+# --- Testing ---
+pytest==8.3.4
+pytest-cov==6.0.0
+pytest-mock==3.14.0
+# Translate is included in moto core; only services with optional dependencies
+# are listed as extras.
+moto[s3,comprehend]==5.0.24
+
+# --- Code Quality / Type Checking ---
+ruff==0.8.6
+black==25.1.0
+mypy==1.14.1
+boto3-stubs[s3,comprehend,translate]==1.42.61
+
+# --- Notebook ---
+ipykernel==7.3.0
+ipython==9.16.1
+jupyter_client==8.9.1
+jupyter_core==5.9.1
+
+# --- SQL linting ---
+sqlfluff==3.3.1

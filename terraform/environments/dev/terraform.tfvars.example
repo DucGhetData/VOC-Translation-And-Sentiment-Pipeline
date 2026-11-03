@@ -1,0 +1,10 @@
+aws_region          = "ap-southeast-1"
+bucket_name         = "voc-analytics-dev-replace-with-unique-suffix"
+project_name        = "voc-pipeline"
+environment         = "dev"
+glue_database_name  = "voc_reviews_dev"
+athena_workgroup_name = "voc-pipeline-dev"
+
+# Fill this in to create the optional AWS Budget notifications.
+# budget_alert_email = "you@example.com"
+# monthly_budget_usd = 10

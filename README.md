@@ -1080,7 +1080,8 @@ DuckDB can read S3 Parquet files directly via the `httpfs` extension, allowing l
 ### Phase 1 — Environment
 
 - Create GitHub repository.
-- Configure Python, Docker, Airflow, AWS CLI and Terraform.
+- Configure Python and Docker; AWS CLI is optional because local AWS calls use boto3.
+- Run Airflow and Terraform through pinned Docker images.
 - Start Airflow with Docker Compose.
 - **Validate Python–S3 connectivity** with a minimal boto3 read/write smoke test (see Section 4.1). Do not proceed to Phase 4 until this passes.
 
